@@ -19,6 +19,8 @@ type PullOptions struct {
 	all       bool
 	platform  string
 	untrusted bool
+	source    	bool
+	source_only bool
 }
 
 // NewPullCommand creates a new `docker pull` command
@@ -38,6 +40,8 @@ func NewPullCommand(dockerCli command.Cli) *cobra.Command {
 	flags := cmd.Flags()
 
 	flags.BoolVarP(&opts.all, "all-tags", "a", false, "Download all tagged images in the repository")
+	flags.BoolVar(&opts.source, "source", false, "Download the source container in addition to the image")
+	flags.BoolVar(&opts.source_only, "source-only", false, "Download only the source container for the image")
 
 	command.AddPlatformFlag(flags, &opts.platform)
 	command.AddTrustVerificationFlags(flags, &opts.untrusted, dockerCli.ContentTrustEnabled())
@@ -53,11 +57,26 @@ func RunPull(cli command.Cli, opts PullOptions) error {
 		return err
 	case opts.all && !reference.IsNameOnly(distributionRef):
 		return errors.New("tag can't be used with --all-tags/-a")
+	case opts.all && (opts.source || opts.source_only):
+		return errors.New("can't download source with --all-tags/-a")
 	case !opts.all && reference.IsNameOnly(distributionRef):
 		distributionRef = reference.TagNameOnly(distributionRef)
 		if tagged, ok := distributionRef.(reference.Tagged); ok {
 			fmt.Fprintf(cli.Out(), "Using default tag: %s\n", tagged.Tag())
 		}
+	}
+
+	var pullSource bool
+
+	// If we want to pull just the container source, we only need to set the platform
+	// If we want to pull both container and source, we need to pass a flag along
+	if opts.source_only {
+		opts.platform = "linux/source"
+		pullSource = false
+	} else if opts.source {
+		pullSource = true
+	} else {
+		pullSource = false
 	}
 
 	ctx := context.Background()
@@ -69,9 +88,9 @@ func RunPull(cli command.Cli, opts PullOptions) error {
 	// Check if reference has a digest
 	_, isCanonical := distributionRef.(reference.Canonical)
 	if !opts.untrusted && !isCanonical {
-		err = trustedPull(ctx, cli, imgRefAndAuth, opts.platform)
+		err = trustedPull(ctx, cli, imgRefAndAuth, opts.platform, pullSource)
 	} else {
-		err = imagePullPrivileged(ctx, cli, imgRefAndAuth, opts.all, opts.platform)
+		err = imagePullPrivileged(ctx, cli, imgRefAndAuth, opts.all, opts.platform, pullSource)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "when fetching 'plugin'") {
